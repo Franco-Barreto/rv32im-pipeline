@@ -1,0 +1,29 @@
+# Vivado
+*.jou
+*.log
+*.str
+*.xpr
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.gen/
+*.srcs/
+.Xil/
+
+# Simulation
+*.vcd
+*.wdb
+*.wlf
+obj_dir/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
