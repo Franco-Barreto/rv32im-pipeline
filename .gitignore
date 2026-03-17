@@ -8,22 +8,13 @@
 *.hw/
 *.ip_user_files/
 *.sim/
-*.gen/
-*.srcs/
-.Xil/
 
 # Simulation
 *.vcd
-*.wdb
 *.wlf
-obj_dir/
+*.pb
+work/
 
 # OS
 .DS_Store
-Thumbs.db
-
-# Editor
 *.swp
-*.swo
-*~
-.vscode/
