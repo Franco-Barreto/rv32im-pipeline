@@ -1,49 +1,52 @@
-`ifndef RV32_TYPES_SV
-`define RV32_TYPES_SV
+// rv32_types.sv — RV32IM Pipeline Types Package
+// Defines opcodes, ALU operations, pipeline register structs, and control signals
+// for a 5-stage pipelined RV32IM processor core.
 
 package rv32_types;
 
-  // ──────────────────────────────────────────────
-  // Opcodes (inst[6:0])
-  // ──────────────────────────────────────────────
+  // ============================================================
+  // RISC-V RV32I Base Opcodes (inst[6:0])
+  // ============================================================
+  // These are the 7-bit opcode field values from the RISC-V spec.
+  // Each maps to an instruction format (R, I, S, B, U, J).
   typedef enum logic [6:0] {
-    OP_LUI      = 7'b0110111,
-    OP_AUIPC    = 7'b0010111,
-    OP_JAL      = 7'b1101111,
-    OP_JALR     = 7'b1100111,
-    OP_BRANCH   = 7'b1100011,
-    OP_LOAD     = 7'b0000011,
-    OP_STORE    = 7'b0100011,
-    OP_IMM      = 7'b0010011,
-    OP_REG      = 7'b0110011,
-    OP_FENCE    = 7'b0001111,
-    OP_SYSTEM   = 7'b1110011
+    OP_LUI      = 7'b0110111,  // U-type: load upper immediate
+    OP_AUIPC    = 7'b0010111,  // U-type: add upper immediate to PC
+    OP_JAL      = 7'b1101111,  // J-type: jump and link
+    OP_JALR     = 7'b1100111,  // I-type: jump and link register
+    OP_BRANCH   = 7'b1100011,  // B-type: conditional branch
+    OP_LOAD     = 7'b0000011,  // I-type: load from memory
+    OP_STORE    = 7'b0100011,  // S-type: store to memory
+    OP_OP_IMM   = 7'b0010011,  // I-type: register-immediate ALU
+    OP_OP       = 7'b0110011,  // R-type: register-register ALU
+    OP_SYSTEM   = 7'b1110011   // I-type: CSR access, ECALL, EBREAK
   } opcode_t;
 
-  // ──────────────────────────────────────────────
-  // ALU operations
-  // ──────────────────────────────────────────────
+  // ============================================================
+  // ALU Operations
+  // ============================================================
+  // Internal encoding for the ALU — does NOT match funct3/funct7 directly.
+  // The decode stage maps (opcode, funct3, funct7) → alu_op_t.
   typedef enum logic [3:0] {
-    ALU_ADD  = 4'b0000,
-    ALU_SUB  = 4'b0001,
-    ALU_AND  = 4'b0010,
-    ALU_OR   = 4'b0011,
-    ALU_XOR  = 4'b0100,
-    ALU_SLL  = 4'b0101,
-    ALU_SRL  = 4'b0110,
-    ALU_SRA  = 4'b0111,
-    ALU_SLT  = 4'b1000,
-    ALU_SLTU = 4'b1001,
-    // M extension
-    ALU_MUL    = 4'b1010,
-    ALU_MULH   = 4'b1011,
-    ALU_DIV    = 4'b1100,
-    ALU_REM    = 4'b1101
+    ALU_ADD   = 4'b0000,
+    ALU_SUB   = 4'b0001,
+    ALU_AND   = 4'b0010,
+    ALU_OR    = 4'b0011,
+    ALU_XOR   = 4'b0100,
+    ALU_SLT   = 4'b0101,  // signed less than
+    ALU_SLTU  = 4'b0110,  // unsigned less than
+    ALU_SLL   = 4'b0111,  // shift left logical
+    ALU_SRL   = 4'b1000,  // shift right logical
+    ALU_SRA   = 4'b1001,  // shift right arithmetic
+    ALU_MUL   = 4'b1010,  // M extension: multiply low
+    ALU_MULH  = 4'b1011,  // M extension: multiply high (signed x signed)
+    ALU_DIV   = 4'b1100,  // M extension: divide
+    ALU_REM   = 4'b1101   // M extension: remainder
   } alu_op_t;
 
-  // ──────────────────────────────────────────────
-  // Branch types (funct3)
-  // ──────────────────────────────────────────────
+  // ============================================================
+  // Branch Operations (funct3 encoding for OP_BRANCH)
+  // ============================================================
   typedef enum logic [2:0] {
     BR_BEQ  = 3'b000,
     BR_BNE  = 3'b001,
@@ -51,104 +54,99 @@ package rv32_types;
     BR_BGE  = 3'b101,
     BR_BLTU = 3'b110,
     BR_BGEU = 3'b111
-  } branch_t;
+  } branch_op_t;
 
-  // ──────────────────────────────────────────────
-  // Immediate type select
-  // ──────────────────────────────────────────────
+  // ============================================================
+  // Memory Operation Width (funct3 encoding for LOAD/STORE)
+  // ============================================================
   typedef enum logic [2:0] {
-    IMM_I = 3'b000,
-    IMM_S = 3'b001,
-    IMM_B = 3'b010,
-    IMM_U = 3'b011,
-    IMM_J = 3'b100
-  } imm_type_t;
-
-  // ──────────────────────────────────────────────
-  // Forwarding mux select
-  // ──────────────────────────────────────────────
-  typedef enum logic [1:0] {
-    FWD_NONE   = 2'b00,   // no forwarding, use register file
-    FWD_EX_MEM = 2'b01,   // forward from EX/MEM pipeline reg
-    FWD_MEM_WB = 2'b10    // forward from MEM/WB pipeline reg
-  } fwd_sel_t;
-
-  // ──────────────────────────────────────────────
-  // Memory access width
-  // ──────────────────────────────────────────────
-  typedef enum logic [1:0] {
-    MEM_WORD = 2'b00,
-    MEM_HALF = 2'b01,
-    MEM_BYTE = 2'b10
+    MEM_BYTE   = 3'b000,  // LB  / SB
+    MEM_HALF   = 3'b001,  // LH  / SH
+    MEM_WORD   = 3'b010,  // LW  / SW
+    MEM_BYTE_U = 3'b100,  // LBU (load byte unsigned)
+    MEM_HALF_U = 3'b101   // LHU (load halfword unsigned)
   } mem_width_t;
 
-  // ──────────────────────────────────────────────
-  // Pipeline registers
-  // ──────────────────────────────────────────────
+  // ============================================================
+  // Forwarding Mux Select
+  // ============================================================
+  // Controls where ALU inputs come from:
+  //   NO_FWD  = register file output (normal path)
+  //   FWD_EX  = forwarded from EX/MEM pipeline register (1-cycle-ago result)
+  //   FWD_MEM = forwarded from MEM/WB pipeline register (2-cycles-ago result)
+  typedef enum logic [1:0] {
+    FWD_NONE = 2'b00,
+    FWD_EX   = 2'b01,
+    FWD_MEM  = 2'b10
+  } fwd_sel_t;
 
+  // ============================================================
+  // Control Signals (generated by decode stage)
+  // ============================================================
+  // Bundled into a struct so they flow through pipeline registers cleanly.
   typedef struct packed {
-    logic [31:0] pc;
-    logic [31:0] pc_plus4;
-    logic [31:0] instruction;
-    logic        valid;
+    alu_op_t    alu_op;       // which ALU operation to perform
+    logic       alu_src;      // 0 = rs2 data, 1 = immediate
+    logic       mem_read;     // 1 = load instruction
+    logic       mem_write;    // 1 = store instruction
+    mem_width_t mem_width;    // byte/half/word + sign extension
+    logic       reg_write;    // 1 = write result to rd
+    logic       mem_to_reg;   // 0 = ALU result, 1 = memory read data
+    logic       branch;       // 1 = conditional branch instruction
+    logic       jump;         // 1 = JAL or JALR
+    logic       lui;          // 1 = LUI instruction (pass immediate directly)
+    logic       auipc;        // 1 = AUIPC instruction (PC + immediate)
+    logic       is_jalr;      // 1 = JALR (register-based jump target)
+  } ctrl_signals_t;
+
+  // ============================================================
+  // Pipeline Registers
+  // ============================================================
+  // Each struct holds everything the downstream stage needs.
+  // Flushing = zero out the struct (all control signals go inactive).
+
+  // --- IF/ID: Fetch → Decode ---
+  typedef struct packed {
+    logic [31:0] pc;          // PC of this instruction
+    logic [31:0] pc_plus4;    // PC + 4 (for JAL/JALR link address)
+    logic [31:0] instruction; // raw 32-bit instruction
+    logic        valid;       // 1 = real instruction, 0 = bubble/flushed
   } if_id_reg_t;
 
+  // --- ID/EX: Decode → Execute ---
   typedef struct packed {
-    logic [31:0] pc;
-    logic [31:0] pc_plus4;
-    logic [31:0] rs1_data;
-    logic [31:0] rs2_data;
-    logic [31:0] imm;
-    logic [4:0]  rs1_addr;
-    logic [4:0]  rs2_addr;
-    logic [4:0]  rd_addr;
-    alu_op_t     alu_op;
-    logic        alu_src;       // 0 = rs2, 1 = imm
-    logic        mem_read;
-    logic        mem_write;
-    mem_width_t  mem_width;
-    logic        mem_unsigned;  // zero-extend loaded value
-    logic        reg_write;
-    logic        wb_sel;        // 0 = ALU result, 1 = memory
-    logic        is_branch;
-    logic        is_jal;
-    logic        is_jalr;
-    branch_t     branch_type;
-    logic        valid;
+    logic [31:0] pc;          // PC (needed for AUIPC, branch target calc)
+    logic [31:0] pc_plus4;    // PC + 4 (needed for JAL/JALR writeback)
+    logic [31:0] rs1_data;    // register file read port 1
+    logic [31:0] rs2_data;    // register file read port 2
+    logic [31:0] immediate;   // sign-extended immediate
+    logic [4:0]  rs1_addr;    // source register 1 address (for forwarding)
+    logic [4:0]  rs2_addr;    // source register 2 address (for forwarding)
+    logic [4:0]  rd_addr;     // destination register address
+    logic [2:0]  funct3;      // funct3 field (for branch comparator, mem width)
+    logic [6:0]  funct7;      // funct7 field (for mul/div variant selection)
+    ctrl_signals_t ctrl;      // control signals for this instruction
+    logic        valid;       // 1 = real instruction
   } id_ex_reg_t;
 
+  // --- EX/MEM: Execute → Memory ---
   typedef struct packed {
-    logic [31:0] pc_plus4;
-    logic [31:0] alu_result;
-    logic [31:0] rs2_data;      // store data
-    logic [4:0]  rd_addr;
-    logic        mem_read;
-    logic        mem_write;
-    mem_width_t  mem_width;
-    logic        mem_unsigned;
-    logic        reg_write;
-    logic        wb_sel;
+    logic [31:0] pc_plus4;    // for JAL/JALR writeback
+    logic [31:0] alu_result;  // ALU output (also used as memory address)
+    logic [31:0] rs2_data;    // store data (forwarded rs2 value)
+    logic [4:0]  rd_addr;     // destination register address
+    ctrl_signals_t ctrl;      // control signals
     logic        valid;
   } ex_mem_reg_t;
 
+  // --- MEM/WB: Memory → Writeback ---
   typedef struct packed {
-    logic [31:0] pc_plus4;
-    logic [31:0] alu_result;
-    logic [31:0] mem_data;
-    logic [4:0]  rd_addr;
-    logic        reg_write;
-    logic        wb_sel;
+    logic [31:0] pc_plus4;    // for JAL/JALR writeback
+    logic [31:0] alu_result;  // ALU result (used if not a load)
+    logic [31:0] mem_data;    // memory read data (used if load)
+    logic [4:0]  rd_addr;     // destination register address
+    ctrl_signals_t ctrl;      // control signals
     logic        valid;
   } mem_wb_reg_t;
 
-  // ──────────────────────────────────────────────
-  // Branch predictor (gshare)
-  // ──────────────────────────────────────────────
-  parameter int GHR_WIDTH = 8;
-  parameter int PHT_DEPTH = 256;  // 2^GHR_WIDTH
-
-  typedef logic [1:0] sat_counter_t;  // 2-bit saturating counter
-
 endpackage
-
-`endif
