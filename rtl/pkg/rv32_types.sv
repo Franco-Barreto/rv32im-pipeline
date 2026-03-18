@@ -1,14 +1,39 @@
-// rv32_types.sv — RV32IM Pipeline Types Package
 // Defines opcodes, ALU operations, pipeline register structs, and control signals
-// for a 5-stage pipelined RV32IM processor core.
+// Note n'bxxxxxxx translates directly to n bits wide, written in binary, with its value being xxxxxxxx. Additionally the b could be for h and d, meaning hexadecimal and decimal.
+// The various types of instruction formats are listed below for quick reference of their structure         
+//─────────────────────────────────────────────────────
+//OP_OP (0110011)    R     funct7 | rs2 | rs1 | funct3 | rd | opcode
+//                          Used by: ADD, SUB, AND, OR, XOR, MUL, DIV...
 
+//OP_OP_IMM (0010011) I    imm[11:0]   | rs1 | funct3 | rd | opcode
+//                          Used by: ADDI, ANDI, ORI, SLLI, SRLI...
+
+//OP_LOAD (0000011)  I     imm[11:0]   | rs1 | funct3 | rd | opcode
+//                          Used by: LB, LH, LW, LBU, LHU
+
+//OP_JALR (1100111)  I     imm[11:0]   | rs1 | funct3 | rd | opcode
+//                          Used by: JALR
+
+//OP_STORE (0100011) S     imm[11:5] | rs2 | rs1 | funct3 | imm[4:0] | opcode
+//                          Used by: SB, SH, SW
+
+//OP_BRANCH (1100011) B    imm[12|10:5] | rs2 | rs1 | funct3 | imm[4:1|11] | opcode
+//                          Used by: BEQ, BNE, BLT, BGE, BLTU, BGEU
+
+//OP_LUI (0110111)   U     imm[31:12]                  | rd | opcode
+//                          Used by: LUI only
+
+//OP_AUIPC (0010111) U     imm[31:12]                  | rd | opcode
+//                          Used by: AUIPC only
+
+//OP_JAL (1101111)   J     imm[20|10:1|11|19:12]       | rd | opcode
+//                          Used by: JAL only 
+// ─────────────────────────────────────────────────────
 package rv32_types;
 
   // ============================================================
   // RISC-V RV32I Base Opcodes (inst[6:0])
   // ============================================================
-  // These are the 7-bit opcode field values from the RISC-V spec.
-  // Each maps to an instruction format (R, I, S, B, U, J).
   typedef enum logic [6:0] {
     OP_LUI      = 7'b0110111,  // U-type: load upper immediate
     OP_AUIPC    = 7'b0010111,  // U-type: add upper immediate to PC
