@@ -1,35 +1,23 @@
-// rv32_decode.sv — Instruction Decode Stage
-// Extracts fields from the raw instruction, generates the sign-extended
-// immediate, reads the register file, and produces control signals.
-//
-// This module is purely combinational — it takes the IF/ID pipeline register
-// as input and produces the ID/EX pipeline register as output. The actual
-// pipeline register storage is in the top-level module.
-
+// No clk or rst_n, the whole circuit is combinational, no flip-flops, no state. All work is done in zero clock cycles (combinational delay).
 module rv32_decode
   import rv32_types::*;
 (
-  // Input from IF/ID pipeline register
-  input  if_id_reg_t  if_id_in,
+  input  if_id_reg_t  if_id_in, // The strut fetch packed: PC, PC+4, 32 bit instruction and valid bit.
 
-  // Register file read ports (directly connected to regfile)
-  output logic [4:0]  rs1_addr,
+  output logic [4:0]  rs1_addr,	// Both go out to the register file, decode asks to give the value in 2 registers
   output logic [4:0]  rs2_addr,
-  input  logic [31:0] rs1_data,
+  input  logic [31:0] rs1_data, // The responds here in the same cycle, the register file ports are here instead of internal as it is a shared resource, writeback connects it
   input  logic [31:0] rs2_data,
 
   // Output to ID/EX pipeline register
-  output id_ex_reg_t  id_ex_out
+  output id_ex_reg_t  id_ex_out // Struct heading to execute stage. Carries everything: register values, devoded immediate, control signals, 
+//				   source/destination register addrress and func3/7 for ALU
 );
-
-  // ============================================================
-  // Instruction field extraction
-  // ============================================================
   logic [31:0] inst;
-  logic [6:0]  opcode;
-  logic [4:0]  rd;
-  logic [2:0]  funct3;
-  logic [6:0]  funct7;
+  logic [6:0]  opcode;	// Opcode is 7 bits to tell us the class of instruction
+  logic [4:0]  rd;	//bits 11:7, destination register, rs1 and 2 are the source register addresses.
+  logic [2:0]  funct3;	//14:12, a 3 bit subcode that disambiguates within a class
+  logic [6:0]  funct7;	// 31:25, a further disambiguator (ADD vs SUB, SRL vs SRA)
 
   assign inst    = if_id_in.instruction;
   assign opcode  = inst[6:0];
@@ -39,37 +27,23 @@ module rv32_decode
   assign funct3  = inst[14:12];
   assign funct7  = inst[31:25];
 
-  // ============================================================
-  // Immediate generation
-  // ============================================================
-  // RISC-V has 5 immediate formats. The sign bit is ALWAYS inst[31].
-  // Getting this right is critical — a wrong sign extension here
-  // causes subtle bugs that are very hard to track down later.
   logic [31:0] imm_i, imm_s, imm_b, imm_u, imm_j;
-  logic [31:0] immediate;
+  logic [31:0] immediate;			///inst31 is the sign bit, every immediate form sign extends it from bit 31. 20{inst[31]} replicates it 20 times to fill upper bits
 
-  // I-type: used by LOAD, OP-IMM, JALR
-  // Bits: inst[31:20] → sign-extended to 32 bits
-  assign imm_i = {{20{inst[31]}}, inst[31:20]};
+  assign imm_i = {{20{inst[31]}}, inst[31:20]};	// imm_i is the simplest just bits 31:20 sign extended, allowing us to get 12 bit signed, and used for addi x1, x2, 5 loads like lw x3, 8(x1) and jalr.
 
-  // S-type: used by STORE
-  // Bits: {inst[31:25], inst[11:7]} → sign-extended
-  assign imm_s = {{20{inst[31]}}, inst[31:25], inst[11:7]};
+  assign imm_s = {{20{inst[31]}}, inst[31:25], inst[11:7]}; // imm_s is for stores. The immediate is split across two fields, 31:25 and 11:7 because rd doesn't exist in store instructions 
+//  								and get repurposed for immediate. Same 12 bit range.
 
-  // B-type: used by BRANCH
-  // Bits: {inst[31], inst[7], inst[30:25], inst[11:8], 1'b0} → sign-extended
-  // Note: bit 0 is always 0 (halfword aligned)
-  assign imm_b = {{19{inst[31]}}, inst[31], inst[7], inst[30:25], inst[11:8], 1'b0};
+  assign imm_b = {{19{inst[31]}}, inst[31], inst[7], inst[30:25], inst[11:8], 1'b0}; // For branches. Bits are scrambled more, and theres a 1'b0 at the bottom, branch targets are 2 byte aligned, 
+//  											so the bit 0 is implicitly 0, giving an extra bit of range. Branches can reach +/- 4KB from the current PC
 
-  // U-type: used by LUI, AUIPC
-  // Bits: {inst[31:12], 12'b0} — upper 20 bits, lower 12 zeroed
-  assign imm_u = {inst[31:12], 12'b0};
+  assign imm_u = {inst[31:12], 12'b0}; //imm_u is for LUI and AUIPC, no sign extension needed because the 20 bit immediate is placed directly into upper 20 bits, with lower 12 zeroed out. Large 
+//  					 constants are made like this: LUI loads upper 20, and ADDI fills the lower 12
 
-  // J-type: used by JAL
-  // Bits: {inst[31], inst[19:12], inst[20], inst[30:21], 1'b0} → sign-extended
-  assign imm_j = {{11{inst[31]}}, inst[31], inst[19:12], inst[20], inst[30:21], 1'b0};
+  assign imm_j = {{11{inst[31]}}, inst[31], inst[19:12], inst[20], inst[30:21], 1'b0}; //For JAL, bits are maximally scrambled to keep the sign but at position 31. Same 1'b0 trick as B-type for 
+//  											 alignment giving a 21 bit signed offset,jal can reach +/- from the current PC
 
-  // Select immediate based on opcode
   always_comb begin
     case (opcode)
       OP_LOAD, OP_OP_IMM, OP_JALR, OP_SYSTEM: immediate = imm_i;
@@ -79,11 +53,9 @@ module rv32_decode
       OP_JAL:                                   immediate = imm_j;
       default:                                  immediate = 32'b0;
     endcase
-  end
+  end					// All five immediates are computed in parallel. Mux just picks which is most relevant on the opcode. The default case cathches register instructions that 
+  					// don't use an immediate, so regardless the output, it will be zeroed
 
-  // ============================================================
-  // Control signal generation
-  // ============================================================
   ctrl_signals_t ctrl;
 
   always_comb begin
