@@ -19,13 +19,13 @@ module rv32_decode
   logic [2:0]  funct3;	//14:12, a 3 bit subcode that disambiguates within a class
   logic [6:0]  funct7;	// 31:25, a further disambiguator (ADD vs SUB, SRL vs SRA)
 
-  assign inst    = if_id_in.instruction;
-  assign opcode  = inst[6:0];
-  assign rd      = inst[11:7];
-  assign rs1_addr = inst[19:15];
-  assign rs2_addr = inst[24:20];
-  assign funct3  = inst[14:12];
-  assign funct7  = inst[31:25];
+  assign inst    = if_id_in.instruction;	// Just renaming so the bit slicing below isn't so long
+  assign opcode  = inst[6:0];		// Bits 6:0 are always the opcode in RISC-V, tells us what family of instruction we're dealing with
+  assign rd      = inst[11:7];		// Where the result goes. Stores and branches don't actually write back, but the bits are still here
+  assign rs1_addr = inst[19:15];	// Goes straight out to the register file to ask for the value
+  assign rs2_addr = inst[24:20];	// Same thing for the second source. For I-type instructions this field is actually part of the immediate, but we extract it anyway
+  assign funct3  = inst[14:12];	// The sub-opcode, like ADD vs XOR share the same opcode but funct3 tells them apart
+  assign funct7  = inst[31:25];	// Only a few instructions care about this, mainly ADD vs SUB, SRL vs SRA, and checking if it's an M-extension instruction
 
   logic [31:0] imm_i, imm_s, imm_b, imm_u, imm_j;
   logic [31:0] immediate;			///inst31 is the sign bit, every immediate form sign extends it from bit 31. 20{inst[31]} replicates it 20 times to fill upper bits
@@ -56,110 +56,99 @@ module rv32_decode
   end					// All five immediates are computed in parallel. Mux just picks which is most relevant on the opcode. The default case cathches register instructions that 
   					// don't use an immediate, so regardless the output, it will be zeroed
 
-  ctrl_signals_t ctrl;
+  ctrl_signals_t ctrl;	// This struct holds all the control bits that tell execute, memory, and writeback what to do with the instruction
 
   always_comb begin
-    // Default: all control signals inactive (safe NOP-like behavior)
-    ctrl = '0;
-    ctrl.alu_op   = ALU_ADD;
-    ctrl.mem_width = MEM_WORD;
+    ctrl = '0;			// Start by zeroing everything out so any instruction that doesn't set a signal gets safe NOP behaviour. Without this,
+//				   latches could be inferred or stale signals from a previous instruction could leak through
+    ctrl.alu_op   = ALU_ADD;	// ADD is the safest default since loads and stores both need addition for address calculation
+    ctrl.mem_width = MEM_WORD;	// Default to full 32-bit word access
 
-    case (opcode)
-      // ----- LUI: rd = immediate (upper 20 bits) -----
-      OP_LUI: begin
-        ctrl.reg_write = 1'b1;
+    case (opcode)		// Big case statement that looks at the opcode and sets the right control signals. Each case is one instruction family
+      OP_LUI: begin		// Load Upper Immediate. Just takes the upper 20 bits of the immediate and puts it in rd. The execute stage handles this
+        ctrl.reg_write = 1'b1;	//   with the lui flag, it doesn't even go through the ALU
         ctrl.lui       = 1'b1;
       end
 
-      // ----- AUIPC: rd = PC + immediate -----
-      OP_AUIPC: begin
-        ctrl.reg_write = 1'b1;
+      OP_AUIPC: begin		// Add Upper Immediate to PC. Same idea as LUI but adds the immediate to the current PC instead. Used for
+        ctrl.reg_write = 1'b1;	//   position-independent code and building 32-bit addresses together with ADDI
         ctrl.auipc     = 1'b1;
         ctrl.alu_op    = ALU_ADD;
       end
 
-      // ----- JAL: rd = PC+4, PC = PC + imm_j -----
-      OP_JAL: begin
-        ctrl.reg_write = 1'b1;
+      OP_JAL: begin		// Jump And Link. Saves PC+4 into rd (the return address) and jumps to PC + imm_j. This is how function calls work,
+        ctrl.reg_write = 1'b1;	//   rd is usually x1 (ra). Execute stage computes the target and tells fetch to redirect
         ctrl.jump      = 1'b1;
       end
 
-      // ----- JALR: rd = PC+4, PC = (rs1 + imm_i) & ~1 -----
-      OP_JALR: begin
-        ctrl.reg_write = 1'b1;
+      OP_JALR: begin		// Jump And Link Register. Same as JAL but the target is rs1 + immediate instead of PC + immediate, and bit 0 is
+        ctrl.reg_write = 1'b1;	//   forced to 0 (the & ~1). This is how function returns work (jalr x0, 0(ra)) and indirect jumps like vtables
         ctrl.jump      = 1'b1;
         ctrl.is_jalr   = 1'b1;
-        ctrl.alu_src   = 1'b1;  // use immediate
+        ctrl.alu_src   = 1'b1;  // needs the immediate as ALU input to compute rs1 + offset
         ctrl.alu_op    = ALU_ADD;
       end
 
-      // ----- BRANCH: compare rs1 and rs2, branch if condition met -----
-      OP_BRANCH: begin
-        ctrl.branch = 1'b1;
+      OP_BRANCH: begin		// All branch instructions (BEQ, BNE, BLT, etc.). Decode just raises the branch flag and passes funct3 along,
+        ctrl.branch = 1'b1;	//   the execute stage does the actual comparison and decides whether to take it or not
       end
 
-      // ----- LOAD: rd = mem[rs1 + imm_i] -----
-      OP_LOAD: begin
-        ctrl.reg_write  = 1'b1;
+      OP_LOAD: begin		// Loads from memory (LB, LH, LW, LBU, LHU). The ALU computes the address as rs1 + immediate, memory stage reads
+        ctrl.reg_write  = 1'b1;	//   the data, and writeback puts it into rd. mem_to_reg tells writeback to grab from memory output instead of ALU
         ctrl.mem_read   = 1'b1;
         ctrl.mem_to_reg = 1'b1;
         ctrl.alu_src    = 1'b1;  // address = rs1 + immediate
         ctrl.alu_op     = ALU_ADD;
-        ctrl.mem_width  = mem_width_t'(funct3);
+        ctrl.mem_width  = mem_width_t'(funct3); // funct3 encodes byte/half/word and signed vs unsigned, cast directly to the enum
       end
 
-      // ----- STORE: mem[rs1 + imm_s] = rs2 -----
-      OP_STORE: begin
-        ctrl.mem_write = 1'b1;
+      OP_STORE: begin		// Stores to memory (SB, SH, SW). Similar to loads but rs2 provides the data to write. No reg_write since stores
+        ctrl.mem_write = 1'b1;	//   don't produce a result. The immediate is S-type (split across two fields) but the mux above already handled that
         ctrl.alu_src   = 1'b1;  // address = rs1 + immediate
         ctrl.alu_op    = ALU_ADD;
         ctrl.mem_width = mem_width_t'(funct3);
       end
 
-      // ----- OP-IMM: register-immediate ALU operations -----
-      OP_OP_IMM: begin
-        ctrl.reg_write = 1'b1;
-        ctrl.alu_src   = 1'b1;  // second operand is immediate
-        case (funct3)
-          3'b000: ctrl.alu_op = ALU_ADD;   // ADDI (no SUBI in RISC-V)
+      OP_OP_IMM: begin		// Register-immediate ALU operations (ADDI, SLTI, XORI, etc.). Same as R-type but the second operand comes from
+        ctrl.reg_write = 1'b1;	//   the immediate instead of rs2. Interestingly RISC-V has no SUBI, you just use ADDI with a negative immediate
+        ctrl.alu_src   = 1'b1;  // tells the ALU mux to pick the immediate
+        case (funct3)		// funct3 picks which ALU operation
+          3'b000: ctrl.alu_op = ALU_ADD;   // ADDI
           3'b010: ctrl.alu_op = ALU_SLT;   // SLTI
           3'b011: ctrl.alu_op = ALU_SLTU;  // SLTIU
           3'b100: ctrl.alu_op = ALU_XOR;   // XORI
           3'b110: ctrl.alu_op = ALU_OR;    // ORI
           3'b111: ctrl.alu_op = ALU_AND;   // ANDI
           3'b001: ctrl.alu_op = ALU_SLL;   // SLLI
-          3'b101: ctrl.alu_op = funct7[5] ? ALU_SRA : ALU_SRL; // SRAI / SRLI
+          3'b101: ctrl.alu_op = funct7[5] ? ALU_SRA : ALU_SRL; // SRAI vs SRLI, funct7 bit 5 is the only way to tell them apart
           default: ctrl.alu_op = ALU_ADD;
         endcase
       end
 
-      // ----- OP: register-register ALU operations -----
-      OP_OP: begin
-        ctrl.reg_write = 1'b1;
-        ctrl.alu_src   = 1'b0;  // second operand is rs2
+      OP_OP: begin		// Register-register ALU operations. Both operands come from the register file. This is also where the M extension
+        ctrl.reg_write = 1'b1;	//   (multiply/divide) lives, distinguished by funct7 being 0000001
+        ctrl.alu_src   = 1'b0;  // second operand is rs2, not an immediate
 
-        if (funct7 == 7'b0000001) begin
-          // M extension: multiply/divide
+        if (funct7 == 7'b0000001) begin // M extension check. If funct7 is exactly 1, it's a multiply or divide instruction
           case (funct3)
-            3'b000: ctrl.alu_op = ALU_MUL;   // MUL
-            3'b001: ctrl.alu_op = ALU_MULH;  // MULH
-            3'b010: ctrl.alu_op = ALU_MULH;  // MULHSU (handle in ALU)
-            3'b011: ctrl.alu_op = ALU_MULH;  // MULHU  (handle in ALU)
-            3'b100: ctrl.alu_op = ALU_DIV;   // DIV
-            3'b101: ctrl.alu_op = ALU_DIV;   // DIVU   (handle in ALU)
-            3'b110: ctrl.alu_op = ALU_REM;   // REM
-            3'b111: ctrl.alu_op = ALU_REM;   // REMU   (handle in ALU)
+            3'b000: ctrl.alu_op = ALU_MUL;   // MUL, lower 32 bits of result
+            3'b001: ctrl.alu_op = ALU_MULH;  // MULH, upper 32 bits signed x signed
+            3'b010: ctrl.alu_op = ALU_MULH;  // MULHSU, signed x unsigned. The ALU uses funct3 to tell these apart
+            3'b011: ctrl.alu_op = ALU_MULH;  // MULHU, unsigned x unsigned
+            3'b100: ctrl.alu_op = ALU_DIV;   // DIV, signed division
+            3'b101: ctrl.alu_op = ALU_DIV;   // DIVU, unsigned division. Again ALU handles the signed/unsigned distinction
+            3'b110: ctrl.alu_op = ALU_REM;   // REM, signed remainder
+            3'b111: ctrl.alu_op = ALU_REM;   // REMU, unsigned remainder
             default: ctrl.alu_op = ALU_ADD;
           endcase
-        end else begin
-          // Base integer operations
+        end else begin		// Base integer operations, the normal R-type instructions
           case (funct3)
-            3'b000: ctrl.alu_op = funct7[5] ? ALU_SUB : ALU_ADD; // ADD / SUB
+            3'b000: ctrl.alu_op = funct7[5] ? ALU_SUB : ALU_ADD; // ADD vs SUB, the only difference is funct7 bit 5
             3'b001: ctrl.alu_op = ALU_SLL;   // SLL
             3'b010: ctrl.alu_op = ALU_SLT;   // SLT
             3'b011: ctrl.alu_op = ALU_SLTU;  // SLTU
             3'b100: ctrl.alu_op = ALU_XOR;   // XOR
-            3'b101: ctrl.alu_op = funct7[5] ? ALU_SRA : ALU_SRL; // SRA / SRL
+            3'b101: ctrl.alu_op = funct7[5] ? ALU_SRA : ALU_SRL; // SRA vs SRL, same funct7 bit 5 trick
             3'b110: ctrl.alu_op = ALU_OR;    // OR
             3'b111: ctrl.alu_op = ALU_AND;   // AND
             default: ctrl.alu_op = ALU_ADD;
@@ -167,35 +156,31 @@ module rv32_decode
         end
       end
 
-      // ----- SYSTEM: CSR instructions (basic support) -----
-      OP_SYSTEM: begin
-        // Placeholder — will expand when adding CSR unit
-        ctrl.reg_write = 1'b0;
+      OP_SYSTEM: begin		// CSR instructions like CSRRW, CSRRS, etc. Not really implemented yet, just a placeholder. reg_write is off
+        ctrl.reg_write = 1'b0;	//   so it doesn't accidentally corrupt a register
       end
 
-      default: begin
-        // Unknown opcode — treat as NOP
+      default: begin		// If the opcode doesn't match anything, zero everything. Acts like a NOP so the pipeline doesn't do anything weird
         ctrl = '0;
       end
     endcase
   end
 
-  // ============================================================
-  // ID/EX output assembly
-  // ============================================================
+  // Packing everything into the ID/EX struct that gets sent to the execute stage. This is basically just wiring, no logic involved.
+  // Everything decode figured out (register values, the immediate, control signals, addresses) gets bundled into one struct so execute has it all in one place
   always_comb begin
-    id_ex_out.pc        = if_id_in.pc;
-    id_ex_out.pc_plus4  = if_id_in.pc_plus4;
-    id_ex_out.rs1_data  = rs1_data;
-    id_ex_out.rs2_data  = rs2_data;
-    id_ex_out.immediate = immediate;
-    id_ex_out.rs1_addr  = rs1_addr;
+    id_ex_out.pc        = if_id_in.pc;		// Pass PC along, execute needs it for AUIPC, JAL, and branch target calculation
+    id_ex_out.pc_plus4  = if_id_in.pc_plus4;	// JAL and JALR save this as the return address into rd
+    id_ex_out.rs1_data  = rs1_data;		// The actual register values that came back from the register file
+    id_ex_out.rs2_data  = rs2_data;		// rs2 is also the store data for SW/SH/SB, memory stage will grab it from here
+    id_ex_out.immediate = immediate;		// Whichever immediate the mux above selected based on the opcode
+    id_ex_out.rs1_addr  = rs1_addr;		// The addresses are passed along too, the forwarding unit in execute needs them to detect data hazards
     id_ex_out.rs2_addr  = rs2_addr;
-    id_ex_out.rd_addr   = rd;
-    id_ex_out.funct3    = funct3;
-    id_ex_out.funct7    = funct7;
-    id_ex_out.ctrl      = ctrl;
-    id_ex_out.valid     = if_id_in.valid;
+    id_ex_out.rd_addr   = rd;			// Destination register, writeback will need this to know where to put the result
+    id_ex_out.funct3    = funct3;		// Execute and memory stages still need funct3 for things like branch comparison type and load sign extension
+    id_ex_out.funct7    = funct7;		// ALU needs this for a few instructions where funct3 alone isn't enough
+    id_ex_out.ctrl      = ctrl;			// All the control signals we just set up above
+    id_ex_out.valid     = if_id_in.valid;	// If fetch injected a bubble, valid is 0 and execute will ignore this instruction
   end
 
 endmodule
