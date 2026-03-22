@@ -122,6 +122,8 @@ package rv32_types;
     logic       lui;          // 1 = LUI instruction (pass immediate directly)
     logic       auipc;        // 1 = AUIPC instruction (PC + immediate)
     logic       is_jalr;      // 1 = JALR (register-based jump target)
+    logic       csr_access;   // 1 = CSR instruction
+    logic       is_mret;      // 1 = MRET instruction
   } ctrl_signals_t;
 
   // ============================================================
